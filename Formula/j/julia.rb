@@ -2,8 +2,9 @@ class Julia < Formula
   desc "Fast, Dynamic Programming Language"
   homepage "https://julialang.org/"
   # Use the `-full` tarball to avoid having to download during the build.
-  url "https://github.com/JuliaLang/julia/releases/download/v1.10.5/julia-1.10.5-full.tar.gz"
-  sha256 "5fc94159b87f34d18bf44a1a940e59f40cbeab931bfdc0c4763203bbb6995260"
+  # TODO: Check if we can unbundle `curl`: https://github.com/JuliaLang/Downloads.jl/issues/260
+  url "https://github.com/JuliaLang/julia/releases/download/v1.11.0-rc4/julia-1.11.0-rc4-full.tar.gz"
+  sha256 "ca39244c1030b177a2ebe013bda5f5871df9223d97e30ddf96e4e24387b99c59"
   license all_of: ["MIT", "BSD-3-Clause", "Apache-2.0", "BSL-1.0"]
   head "https://github.com/JuliaLang/julia.git", branch: "master"
 
@@ -25,11 +26,10 @@ class Julia < Formula
 
   depends_on "cmake" => :build # Needed to build LLVM
   depends_on "gcc" => :build # for gfortran
-  # TODO: Use system `suite-sparse` when `julia` supports v7.3+.
-  # PR ref: https://github.com/JuliaLang/julia/pull/52577
-  depends_on "suite-sparse" => :test # Check bundled copy is used
   depends_on "ca-certificates"
-  depends_on "curl"
+  # Julia is currently incompatible with curl >= 8.10
+  # Issue ref: https://github.com/JuliaLang/Downloads.jl/issues/260
+  # TODO: depends_on "curl"
   depends_on "gmp"
   depends_on "libblastrampoline"
   depends_on "libgit2"
@@ -41,10 +41,13 @@ class Julia < Formula
   depends_on "openlibm"
   depends_on "p7zip"
   depends_on "pcre2"
+  depends_on "suite-sparse"
   depends_on "utf8proc"
+  depends_on "zstd"
 
   uses_from_macos "perl" => :build
   uses_from_macos "python" => :build
+  uses_from_macos "ncurses" # for terminfo
   uses_from_macos "zlib"
 
   on_linux do
@@ -52,8 +55,6 @@ class Julia < Formula
   end
 
   conflicts_with "juliaup", because: "both install `julia` binaries"
-
-  fails_with gcc: "5"
 
   # Link against libgcc_s.1.1.dylib, not libgcc_s.1.dylib
   # https://github.com/JuliaLang/julia/issues/48056
@@ -63,6 +64,12 @@ class Julia < Formula
   end
 
   def install
+    # Workaround for missing library ccalllazyfoo.so
+    # Workaround to avoid linking to `libedit`
+    # PR ref: https://github.com/JuliaLang/julia/pull/55968
+    inreplace "src/Makefile", " SONAME_FLAGS,ccalllazy", " SONAME_FLAGS,libccalllazy"
+    inreplace "deps/llvm.mk", /-DHAVE_LIBEDIT=Off$/, "\\0 -DLLVM_ENABLE_LIBEDIT=OFF"
+
     # Build documentation available at
     # https://github.com/JuliaLang/julia/blob/v#{version}/doc/build/build.md
     args = %W[
@@ -73,13 +80,13 @@ class Julia < Formula
       USE_BINARYBUILDER=0
       USE_SYSTEM_BLAS=1
       USE_SYSTEM_CSL=1
-      USE_SYSTEM_CURL=1
+      USE_SYSTEM_CURL=0
       USE_SYSTEM_GMP=1
       USE_SYSTEM_LAPACK=1
       USE_SYSTEM_LIBBLASTRAMPOLINE=1
       USE_SYSTEM_LIBGIT2=1
       USE_SYSTEM_LIBSSH2=1
-      USE_SYSTEM_LIBSUITESPARSE=0
+      USE_SYSTEM_LIBSUITESPARSE=1
       USE_SYSTEM_MBEDTLS=1
       USE_SYSTEM_MPFR=1
       USE_SYSTEM_NGHTTP2=1
@@ -95,6 +102,7 @@ class Julia < Formula
       LIBLAPACK=-lopenblas
       LIBLAPACKNAME=libopenblas
       USE_BLAS64=0
+      WITH_TERMINFO=0
     ]
 
     args << "MACOSX_VERSION_MIN=#{MacOS.version}" if OS.mac?
@@ -146,15 +154,19 @@ class Julia < Formula
 
     # Remove library versions from MbedTLS_jll, nghttp2_jll and others
     # https://git.archlinux.org/svntogit/community.git/tree/trunk/julia-hardcoded-libs.patch?h=packages/julia
-    %w[MbedTLS nghttp2 LibGit2 OpenLibm].each do |dep|
-      (buildpath/"stdlib").glob("**/#{dep}_jll.jl") do |jll|
-        inreplace jll, %r{@rpath/lib(\w+)(\.\d+)*\.dylib}, "@rpath/lib\\1.dylib"
-        inreplace jll, /lib(\w+)\.so(\.\d+)*/, "lib\\1.so"
+    %w[MbedTLS nghttp2 LibGit2 OpenLibm SuiteSparse].each do |dep|
+      inreplace (buildpath/"stdlib").glob("**/#{dep}_jll.jl") do |s|
+        s.gsub!(%r{@rpath/lib(\w+)(\.\d+)*\.dylib}, "@rpath/lib\\1.dylib")
+        s.gsub!(/lib(\w+)\.so(\.\d+)*/, "lib\\1.so")
       end
     end
 
     # Make Julia use a CA cert from `ca-certificates`
     (buildpath/"usr/share/julia").install_symlink Formula["ca-certificates"].pkgetc/"cert.pem"
+
+    # Workaround to install bundled curl without bundling other libs
+    odie "Remove `make install-curl` workaround!" if deps.map(&:to_s).include?("curl")
+    system "make", "-C", "deps", "install-curl", *args
 
     system "make", *args, "install"
 
@@ -197,9 +209,11 @@ class Julia < Formula
 
     assert_equal "4", shell_output("#{bin}/julia #{args.join(" ")} --print '2 + 2'").chomp
 
-    if OS.linux? || Hardware::CPU.arm? || MacOS.version > :monterey
-      # This test times out on 12-x86_64.
-      system bin/"julia", *args, "--eval", 'Base.runtests("core")'
+    if OS.linux? || Hardware::CPU.arm?
+      # Setting up test suite is slow and causes Intel macOS to exceed 5 min limit
+      with_env(CI: nil) do
+        system bin/"julia", *args, "--eval", 'Base.runtests("core")'
+      end
     end
 
     # Check that installing packages works.
