@@ -1,10 +1,9 @@
 class Qmmp < Formula
   desc "Qt-based Multimedia Player"
   homepage "https://qmmp.ylsoftware.com/"
-  url "https://qmmp.ylsoftware.com/files/qmmp/2.1/qmmp-2.1.9.tar.bz2"
-  sha256 "b59f7a378b521d4a6d2b5c9e37a35c3494528bf0db85b24caddf3e1a1c9c3a37"
+  url "https://qmmp.ylsoftware.com/files/qmmp/2.2/qmmp-2.2.0.tar.bz2"
+  sha256 "5eca4dd6e8dcc68d3a6d428c67a2845337db2a4c130bac0a9fed11c741b83e55"
   license "GPL-2.0-or-later"
-  revision 1
 
   livecheck do
     url "https://qmmp.ylsoftware.com/downloads.php"
@@ -66,15 +65,6 @@ class Qmmp < Formula
     depends_on "musepack"
   end
 
-  on_sonoma :or_newer do
-    # Support Sonoma (BSD iconv) as qmmp has an incompatible typedef:
-    # /tmp/qmmp-20240828-19582-sf4k85/qmmp-2.1.9/src/qmmp/qmmptextcodec.h:28:15:
-    # error: typedef redefinition with different types ('void *' vs 'struct __tag_iconv_t *')
-    #
-    # Issue ref: https://sourceforge.net/p/qmmp-dev/tickets/1167/
-    patch :DATA
-  end
-
   on_linux do
     depends_on "alsa-lib"
     depends_on "libx11"
@@ -84,12 +74,12 @@ class Qmmp < Formula
   fails_with gcc: "5" # ffmpeg is compiled with GCC
 
   resource "qmmp-plugin-pack" do
-    url "https://qmmp.ylsoftware.com/files/qmmp-plugin-pack/2.1/qmmp-plugin-pack-2.1.2.tar.bz2"
-    sha256 "fb5b7381a7f11a31e686fb7c76213d42dfa5df1ec61ac2c7afccd8697730c84b"
+    url "https://qmmp.ylsoftware.com/files/qmmp-plugin-pack/2.2/qmmp-plugin-pack-2.2.0.tar.bz2"
+    sha256 "5697947d8c201d1486381a2a6db6038d17b4f36b94f2a474b815b3af5a429a88"
   end
 
   def install
-    cmake_args = std_cmake_args + %W[
+    cmake_args = %W[
       -DCMAKE_INSTALL_RPATH=#{rpath}
       -DCMAKE_STAGING_PREFIX=#{prefix}
       -DUSE_SKINNED=ON
@@ -97,20 +87,18 @@ class Qmmp < Formula
       -DUSE_QMMP_DIALOG=ON
     ]
     if OS.mac?
-      cmake_args << "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-undefined,dynamic_lookup"
-      cmake_args << "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-undefined,dynamic_lookup"
-      cmake_args << "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-undefined,dynamic_lookup"
+      cmake_args += %w[EXE SHARED MODULE].map { |type| "-DCMAKE_#{type}_LINKER_FLAGS=-Wl,-undefined,dynamic_lookup" }
     end
 
-    system "cmake", "-S", ".", *cmake_args
-    system "cmake", "--build", "."
-    system "cmake", "--install", "."
+    system "cmake", "-S", ".", "-B", "build", *cmake_args, *std_cmake_args
+    system "cmake", "--build", "build"
+    system "cmake", "--install", "build"
 
     ENV.append_path "PKG_CONFIG_PATH", lib/"pkgconfig"
     resource("qmmp-plugin-pack").stage do
-      system "cmake", ".", *std_cmake_args, "-DCMAKE_INSTALL_RPATH=#{rpath}"
-      system "cmake", "--build", "."
-      system "cmake", "--install", "."
+      system "cmake", "-S", ".", "-B", "build", "-DCMAKE_INSTALL_RPATH=#{rpath}", *std_cmake_args
+      system "cmake", "--build", "build"
+      system "cmake", "--install", "build"
     end
   end
 
@@ -120,23 +108,3 @@ class Qmmp < Formula
     system bin/"qmmp", "--version"
   end
 end
-
-__END__
-diff --git a/src/qmmp/qmmptextcodec.h b/src/qmmp/qmmptextcodec.h
-index 5242c33..7399c54 100644
---- a/src/qmmp/qmmptextcodec.h
-+++ b/src/qmmp/qmmptextcodec.h
-@@ -21,12 +21,11 @@
- #ifndef QMMPTEXTCODEC_H
- #define QMMPTEXTCODEC_H
-
-+#include <iconv.h>
- #include <QByteArray>
- #include <QStringList>
- #include "qmmp_export.h"
-
--typedef void *iconv_t;
--
- class QMMP_EXPORT QmmpTextCodec
- {
- public:
